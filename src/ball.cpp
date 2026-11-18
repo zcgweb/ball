@@ -651,6 +651,12 @@ static void SaveNetPill()  { RegSetDword(kRegNetPill,  g_netPill  ? 1u : 0u); }
 // 拉伸用的 DIB 按最大档位一次性分配，切档位不需重建，也不会留下上一档残影。
 static int     g_zoomIdx = kZoomDefault;   // kZoomLevels 下标；启动时被 LoadZoom 覆盖
 
+// 双击面板：临时放大到当前显示器工作区中央，再双击还原。
+// 这是纯临时状态，不写注册表；g_centerSaved* 保存进入前的缩放和窗口位置。
+static bool g_centerExpanded = false;
+static int  g_centerSavedZoom = kZoomDefault;
+static int  g_centerSavedX = 0, g_centerSavedY = 0;
+
 // 缩放档位持久化：HKCU\Software\CpuBall\Zoom（REG_DWORD，kZoomLevels 下标）。
 static void LoadZoom() {
     HKEY hk = nullptr;
@@ -837,6 +843,8 @@ static void DrawPill(int index, float pct);
 static void TrayAdd();
 static void ResetWindowPosition(bool save = true);
 static void ResetAllPreferences();
+static void ToggleCenterZoom();
+static void ClearCenterZoomState();
 static void EnsureWindowVisible();
 static RECT BandRect(int index);
 static void RecordHistory(float cpu, float mem, float disk, float up, float down,
@@ -1468,7 +1476,9 @@ static void ApplyZoom(int idx, bool anchorAtCursor) {
         ay = (float)(pt.y - g_winY) / oldS;
     }
     g_zoomIdx = idx;
-    SaveZoom();              // 滚轮和菜单切档都记住，下次启动沿用
+    // 临时居中放大时不写注册表，退出后仍还原进双击前的档位，
+    // 避免“界面是 A 档、重启变成 B 档”的不一致。
+    if (!g_centerExpanded) SaveZoom();
     const float newS = Zoom();
     if (anchorAtCursor && (ax != 0.f || ay != 0.f)) {
         g_winX = pt.x - (LONG)(ax * newS + 0.5f);
@@ -1480,6 +1490,63 @@ static void ApplyZoom(int idx, bool anchorAtCursor) {
     EnsureWindowVisible();   // 缩放后若超出屏幕则拉回
     SaveWindowPos();         // 锚点缩放会移动窗口，记下最终位置
     RenderPanel();
+}
+
+// 双击放大：切到最大缩放档并把窗口放到当前显示器工作区正中央。
+// 进入时记下原缩放/坐标；这里刻意不调用 SaveZoom/SaveWindowPos，
+// 所以临时放大状态不会被持久化，退出时精确还原到双击之前。
+static void ToggleCenterZoom() {
+    if (!g_hwnd) return;
+
+    if (g_centerExpanded) {
+        g_centerExpanded = false;
+        g_zoomIdx = g_centerSavedZoom;
+        g_winX = g_centerSavedX;
+        g_winY = g_centerSavedY;
+        SetWindowPos(g_hwnd, nullptr, g_winX, g_winY, OutW(), OutViewH(),
+                     SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOCOPYBITS);
+        AddBallTools();
+        RenderPanel();
+        ApplyTopmost();
+        return;
+    }
+
+    // 先按进入前的窗口判断在哪块屏幕，再按放大后的尺寸居中。
+    RECT oldRect{ g_winX, g_winY, g_winX + OutW(), g_winY + OutViewH() };
+    HMONITOR mon = MonitorFromRect(&oldRect, MONITOR_DEFAULTTONEAREST);
+    MONITORINFOEXW mi{};
+    mi.cbSize = sizeof(mi);
+    if (!GetMonitorInfoW(mon, &mi)) {
+        mi.rcWork.left = 0; mi.rcWork.top = 0;
+        mi.rcWork.right = GetSystemMetrics(SM_CXSCREEN);
+        mi.rcWork.bottom = GetSystemMetrics(SM_CYSCREEN);
+    }
+
+    g_centerSavedZoom = g_zoomIdx;
+    g_centerSavedX = g_winX;
+    g_centerSavedY = g_winY;
+    g_centerExpanded = true;
+    g_zoomIdx = kZoomCount - 1;
+
+    const int w = OutW();
+    const int h = OutViewH();
+    const int waW = mi.rcWork.right - mi.rcWork.left;
+    const int waH = mi.rcWork.bottom - mi.rcWork.top;
+    g_winX = waW >= w ? mi.rcWork.left + (waW - w) / 2 : mi.rcWork.left;
+    g_winY = waH >= h ? mi.rcWork.top + (waH - h) / 2 : mi.rcWork.top;
+
+    SetWindowPos(g_hwnd, nullptr, g_winX, g_winY, w, h,
+                 SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOCOPYBITS);
+    AddBallTools();
+    RenderPanel();
+    ShowWindow(g_hwnd, SW_SHOWNOACTIVATE);
+    ApplyTopmost();
+}
+
+// 菜单里的“重置窗口位置”/“重置所有偏好”会接管窗口定位，
+// 这时丢弃临时放大标记，避免下一次双击把旧坐标翻回来。
+static void ClearCenterZoomState() {
+    g_centerExpanded = false;
 }
 
 static void HandleMenuCmd(int id) {
@@ -1613,6 +1680,7 @@ static void ApplyTopmost() {
 // 因此只改 g_winX/g_winY 再重绘即可，不需要 SetWindowPos。
 static void ResetWindowPosition(bool save) {
     if (!g_hwnd) return;
+    ClearCenterZoomState();
     RECT wa{};
     if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0)) {
         wa.left = 0; wa.top = 0;
@@ -1875,6 +1943,14 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         return 0;
     }
 
+    case WM_LBUTTONDBLCLK:
+        // 双击序列的第二次 DOWN 已经 SetCapture；这里先退出拖动,
+        // 免得随后的 WM_LBUTTONUP 把临时放大后的坐标写进注册表。
+        g_dragging = false;
+        ReleaseCapture();
+        ToggleCenterZoom();
+        return 0;
+
     case WM_LBUTTONDOWN:
         g_dragging = true;
         SetCapture(hwnd);
@@ -1898,7 +1974,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     case WM_LBUTTONUP:
         if (g_dragging) {
             g_dragging = false; ReleaseCapture();
-            SaveWindowPos();     // 拖动结束记一次，避免 MOUSEMOVE 高频写注册表
+            // 临时放大时拖动不改变持久位置，退出双击后回到原位。
+            if (!g_centerExpanded)
+                SaveWindowPos();   // 拖动结束记一次，避免 MOUSEMOVE 高频写注册表
         }
         return 0;
 
@@ -2011,6 +2089,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
 
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
+    wc.style = CS_DBLCLKS;   // 面板双击需要 WM_LBUTTONDBLCLK
     wc.lpfnWndProc = WndProc;
     wc.hInstance = hInstance;
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
