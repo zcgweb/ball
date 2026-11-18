@@ -1,0 +1,17 @@
+# Visual Studio / MSYS2 build artifacts
+*.o
+*.obj
+*.res
+*.exp
+*.lib
+*.pdb
+*.ilk
+*.suo
+*.user
+.vs/
+
+# Local test artifacts
+*.log
+*.tmp
+__pycache__/
+*.pyc
