@@ -99,11 +99,13 @@ static const int  kNetBand0     = 3;     // 网速状态条起始下标（同时
 static const int  kNetBandCount = 2;     // 网速状态条数量（上传 + 下载）
 static const int  kH         = kBandTop + kBandCount * (kBandH + kBandGap) + 2;   // = 326
 // ---- 鼠标滚轮缩放：绘制仍按 kW×kH 的逻辑帧，输出时等比拉伸到目标尺寸 ----
-// 档位固定，避免连续缩放把窗口拖到不可读；3.0x 是分配拉伸缓冲的上限。
+// 档位固定，避免连续缩放把窗口拖到不可读；3.0x 是滚轮档位与拉伸缓冲的上限。
+// 双击居中放大时在此之上再乘 kCenterFactor（1.5x）→ 4.5x，仅临时状态。
 static const float kZoomLevels[] = { 0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f, 2.5f, 3.0f };
 static const int   kZoomCount    = (int)(sizeof(kZoomLevels) / sizeof(kZoomLevels[0]));
 static const int   kZoomDefault  = 2;      // 1.0x
 static const float kZoomMax      = 3.0f;
+static const float kCenterFactor = 1.5f;  // 双击放大在此基础上再放大 50%
 static const UINT kTimerMs  = 250;
 static const float kEmaA    = 0.35f;
 static const UINT kTrayId   = 0x1C01;
@@ -683,7 +685,11 @@ static HDC     g_scaleDc = nullptr;
 static HBITMAP g_scaleDib = nullptr;
 static HGDIOBJ g_scaleOldBmp = nullptr;
 
-static float Zoom() { return kZoomLevels[g_zoomIdx]; }
+// 双击居中放大时，在滚轮档位之上再乘 kCenterFactor（3.0x → 4.5x）；
+// 这是纯临时倍率，退出双击即消失，不影响已保存的滚轮档位。
+static float Zoom() {
+    return kZoomLevels[g_zoomIdx] * (g_centerExpanded ? kCenterFactor : 1.0f);
+}
 static int   OutW() { return (int)(kW * Zoom() + 0.5f); }
 static int   OutH(int logicalH) { return (int)(logicalH * Zoom() + 0.5f); }
 static LONG  Zs(float v) { return (LONG)(v * Zoom() + 0.5f); }
@@ -1758,11 +1764,13 @@ static bool InitFrameBuffer() {
     bi.bmiHeader.biBitCount = 32;
     bi.bmiHeader.biCompression = BI_RGB;
 
-    // 拉伸缓冲：按最大缩放档位一次性分配，之后切档位只改 StretchBlt 的目标矩形
+    // 拉伸缓冲：按最大输出倍率（滚轮最大档 × 双击额外倍率）一次性分配，
+    // 之后切档位只改 StretchBlt 的目标矩形。双击放大到 4.5x 也需要完整缓冲。
+    const float kOutMax = kZoomMax * kCenterFactor;
     BITMAPINFO si{};
     si.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    si.bmiHeader.biWidth = (int)(kW * kZoomMax + 0.5f);
-    si.bmiHeader.biHeight = -(int)(kH * kZoomMax + 0.5f);
+    si.bmiHeader.biWidth = (int)(kW * kOutMax + 0.5f);
+    si.bmiHeader.biHeight = -(int)(kH * kOutMax + 0.5f);
     si.bmiHeader.biPlanes = 1;
     si.bmiHeader.biBitCount = 32;
     si.bmiHeader.biCompression = BI_RGB;
