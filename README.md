@@ -1,6 +1,6 @@
-# ball — Windows 桌面负载监视器
+# ball — Windows 桌面负载监视器（Rust 版）
 
-一个零依赖、单文件、可直接运行的 Windows 桌面小工具：六个实时负载球显示当前 CPU / 内存 / 磁盘 / 上传 / 下载 / GPU；下方六条历史状态条显示最近 60 秒趋势。球是实时值，条是历史值。
+一个零依赖、单文件、可直接运行的 Windows 桌面小工具：六个实时负载球显示当前 CPU / 内存 / 磁盘 / 上传 / 下载 / GPU；下方六条历史状态条显示最近 60 秒趋势。球是实时值，条是历史值。当前正式版由 **Rust / 原生 Win32 GDI** 重写实现，功能与旧 C++ 版对齐。
 
 ## 功能
 
@@ -12,7 +12,7 @@
 - **双击放大**：在球或状态条上双击，面板立即放大到 **4.5×**（滚轮最大档 3.0× 再放大 50%）并居中到当前屏幕；再双击一次，精确还原到双击前的位置和大小。该状态是临时的，不写入偏好。
 - **偏好持久化**：显示模式、语言、缩放、百分比、置顶、网速形状、窗口位置全部写入注册表，重启后沿用。
 - **单实例**：重复启动会拉回旧窗口并给出提示，不再出现“进程在跑但桌面找不到窗口”。
-- **零第三方依赖**：MSYS2 UCRT64 GCC 静态编译，仅调用 Windows 系统 DLL / UCRT API Set。
+- **零第三方依赖**：Rust release 静态/剥离构建，导入表只有 Windows 系统 DLL 与 UCRT API Set，无第三方运行时 DLL。
 
 ## 快速开始
 
@@ -33,42 +33,50 @@
 
 > 发布者若要彻底消除该提示，需用代码签名证书（OV/EV）对 `ball.exe` 签名并向 Microsoft SmartScreen 建立信誉；本项目默认不附带签名。
 
-> 当前发布版本：`1.0.0`。二进制 md5：`792fb4456220b9942a37dc79866957f8`（80,896 B）。
+> 当前发布版本：`1.0.0`（Rust 重写版）。编译日期：`2026-11-26`。二进制 md5：`934c3cb31cf390c7175b736d2aaefcf4`（306,176 B）。
 
 ## 目录结构
 
 ```
 .
 ├── README.md             本说明
-├── DESIGN.md             设计思路与实现要点
+├── DESIGN.md             设计思路与实现要点（Rust 版）
 ├── LICENSE               MIT 开源许可证
-├── build_ball.bat        便携构建脚本（MSYS2 UCRT64）
+├── Cargo.toml            Rust 工程配置
+├── Cargo.lock            依赖锁定（windows-sys 0.61）
+├── build_rust.bat        Rust 发布构建脚本（当前版本）
 ├── bin/
-│   └── ball.exe          发布用单文件可执行程序
+│   └── ball.exe          发布用单文件可执行程序（Rust 版）
 ├── src/
-│   ├── ball.cpp          主源码（Win32 C++）
-│   ├── ball.rc           图标资源脚本
-│   └── ball.ico          图标
-└── legacy/
-    └── ball.py           早期 Python 原型，仅作历史参考
+│   ├── main.rs           当前正式源码：Rust / Win32 GDI
+│   ├── ball.cpp          旧 C++ 实现，保留作对照
+│   ├── ball.rc           旧 C++ 图标资源脚本
+│   └── ball.ico          旧 C++ 图标文件
+├── legacy/
+│   └── ball.py           早期 Python 原型，仅作历史参考
+└── build_ball.bat        旧 C++ 版构建脚本，保留作历史参考
 ```
 
-## 从源码构建
+当前 `bin/ball.exe` 由 `src/main.rs` + `Cargo.toml` 构建，不是由旧 C++ 源码生成。旧 `build_ball.bat` 和 `src/ball.cpp` 仅用于对照早期实现，不再用于发布构建。
 
-需要 MSYS2 的 `ucrt64` 工具链（/gcc/g++/windres）。在仓库根目录执行：
+## 从源码构建（Rust）
+
+需要 Rust stable（已在 `rustc 1.100.0 / x86_64-pc-windows-gnu` 上验证）。在仓库根目录执行：
 
 ```bat
-set MSYS2_UCRT64_BIN=C:\msys64\ucrt64\bin
-build_ball.bat
+build_rust.bat
 ```
 
-脚本会编译 `src/ball.cpp` 和 `src/ball.rc`，输出到 `bin/ball.exe`。链接参数为 `-static -static-libgcc -static-libstdc++ -Wl,--no-insert-timestamp`，因此不需要 MinGW 运行时 DLL，并且同一天内重复构建的 PE 时间戳固定。
+脚本等价于：
 
-如需固定 About 对话框里的编译日期以做跨日期可复现构建，可在编译 `ball.cpp` 时加：
+```bat
+cargo build --release
+copy /Y target\release\ball.exe bin\ball.exe
+```
 
-```
--DBALL_BUILD_DATE=L"2026-11-17"
-```
+`Cargo.toml` 的 release profile 使用 `opt-level = "z"`、`lto = true`、`panic = "abort"`、`strip = true`、`codegen-units = 1`，产物为单个 GUI 子系统 exe。本机的 WorkBuddy 工具进程里直接跑 cargo 可能触发子进程创建异常，构建请在独立终端中执行。
+
+> 已知差异：当前 Rust 版尚未把 `src/ball.ico` 编进资源，exe 使用系统默认应用图标；图标资源保留在 `src/` 供后续接入。
 
 ## 偏好存储位置
 
@@ -78,7 +86,7 @@ build_ball.bat
 |---|---|
 | `ViewMode` | 0=球+条，1=只球，2=只条 |
 | `Lang` | 0=中文，1=English |
-| `Zoom` | `kZoomLevels` 下标，0..7 |
+| `Zoom` | `ZOOM_LEVELS` 下标，0..7 |
 | `ShowText` | 是否显示百分比 |
 | `Topmost` | 是否始终置顶 |
 | `NetPill` | 网速球 0=圆形，1=圆角药丸 |
@@ -91,6 +99,7 @@ build_ball.bat
 - 目标平台：Windows 10 / 11，x64。
 - 无安装器、无配置文件、无后台服务；删除 `ball.exe` 即完成卸载（偏好注册表项会保留，可用菜单里的重置功能清除）。
 - 进程使用命名互斥量 `Local\CpuBall_SingleInstance_v1` 保证单实例。
+- About 中显示版本 `1.0.0`、开发信息 `jxs using WorkBuddy`、编译日期 `2026-11-26`。
 - 本项目采用 [MIT 许可证](LICENSE)，允许自由使用、复制、修改、合并、发布、分发、再许可和/或销售，只需保留版权与许可声明。
 
 更多实现细节见 [DESIGN.md](DESIGN.md)。
