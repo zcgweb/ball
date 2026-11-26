@@ -481,10 +481,16 @@ impl Sampler {
             if GetIfTable(table, &mut sz, FALSE) != ERROR_SUCCESS { return (0.0, 0.0, 0.0, 0.0); }
             let mut inb = 0u64; let mut outb = 0u64;
             let n = (*table).dwNumEntries as usize;
+            // 同一块网卡可能被过滤驱动镜像成多行（dwIndex 不同但计数完全相同），
+            // 按 (入,出) 计数去重，只统计一次，否则网速会被放大数倍
+            let mut seen: Vec<(u32, u32)> = Vec::new();
             for i in 0..n {
                 let r = &*(*table).table.as_ptr().add(i);
-                if r.dwOperStatus != 6 { continue; } // IF_OPER_STATUS_OPERATIONAL = 6
+                if r.dwOperStatus != IF_OPER_STATUS_OPERATIONAL { continue; } // 连接状态 = 5（曾误写 6 导致网速恒为 0）
                 if r.dwType == 24 { continue; }       // LOOPBACK
+                let pair = (r.dwInOctets, r.dwOutOctets);
+                if seen.contains(&pair) { continue; }
+                seen.push(pair);
                 inb = inb.wrapping_add(r.dwInOctets as u64);
                 outb = outb.wrapping_add(r.dwOutOctets as u64);
             }
@@ -1055,7 +1061,7 @@ fn init_tooltip(gp: &mut G) {
     unsafe {
         InitCommonControls();
         let cls = TOOLTIPS_CLASSW;
-        gp.hwnd_tip = CreateWindowExW(0, cls, null(),
+        gp.hwnd_tip = CreateWindowExW(WS_EX_TOPMOST, cls, null(),
             WS_POPUP | TTS_NOPREFIX | TTS_ALWAYSTIP | TTS_BALLOON,
             CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
             gp.hwnd, null_mut(), GetModuleHandleW(null()), null());
@@ -1383,6 +1389,12 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
         WM_COMMAND => { handle_menu(g(), (wp as u32) & 0xFFFF); return 0; }
         WM_NOTIFY => {
             let nm = lp as *const NMHDR;
+            if (*nm).code == TTN_SHOW as u32 && (*nm).hwndFrom == g().hwnd_tip {
+                // 气泡每次弹出时确保位于最顶层，避免被本程序的置顶窗口盖住底部文字
+                SetWindowPos(g().hwnd_tip, HWND_TOPMOST, 0, 0, 0, 0,
+                             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                return 0;
+            }
             if (*nm).code == TTN_GETDISPINFOW as u32 && (*nm).hwndFrom == g().hwnd_tip {
                 let id = (*nm).idFrom;
                 if id < (6 + BAND_COUNT) as usize && (if id < 6 { g().balls_visible() } else { g().bands_visible() }) {
