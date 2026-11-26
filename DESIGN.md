@@ -145,7 +145,7 @@ codegen-units = 1
 
 依赖只有 `windows-sys 0.61`（启用所需 Win32 feature）；`Cargo.lock` 锁定具体版本。已在 `rustc 1.100.0 (x86_64-pc-windows-gnu)` 上验证，产物是 GUI 子系统 PE32+ exe，导入表 20 项，全部为 `KERNEL32.dll`、`user32.dll`、`gdi32.dll`、`advapi32.dll`、`shell32.dll`、`comctl32.dll`、`pdh.dll`、`iphlpapi.dll`、`ntdll.dll` 和 `api-ms-win-*` UCRT API Set，没有第三方 DLL。
 
-当前发布版：314,368 B，md5 `af94885f88e227c8f756fa3b9eaa84f5`（已内嵌 `ball.ico`）。本机 WorkBuddy 工具进程里直接跑 cargo 可能触发子进程创建异常，构建应放在独立终端执行。
+当前发布版：314,880 B，md5 `b39c0a3f372a8f3dfc85603ae64861db`（已内嵌 `ball.ico`）。本机 WorkBuddy 工具进程里直接跑 cargo 可能触发子进程创建异常，构建应放在独立终端执行。
 
 ### 单实例与句柄管理注意事项（2026-11-26 审计修复）
 
@@ -155,6 +155,16 @@ codegen-units = 1
 - 句柄泄漏：托盘图标每秒更新，旧 `HICON` 因条件写反从未销毁（实测 20 秒泄漏 20 个句柄，修复后零增长）；退出路径的 `DestroyIcon`、CBT hook 的 `UnhookWindowsHookEx` 同理。
 - 失效路径：`LoadLibraryW` 成功才应 `GetProcAddress`（版本号回退、DPI awareness 两处因条件写反变成对空模块取地址，永远失败）；`IDM_EXIT` 的 `PostMessageW(WM_CLOSE)` 因 `hwnd.is_null()` 写反从未发出；About 对话框 OK 按钮改文字、PDH 预热采集同理。
 - 防御性调整：磁盘计数器添加失败时仍执行 `PdhCollectQueryData`，保证同查询下的 GPU 计数器有数据。
+
+### 第二轮独立审计（2026-11-26，非 `is_null()` 类别）
+
+换类别复查后又修复 3 处（均为移植时丢失的安全属性或潜在 UB）：
+
+- tooltip 缓冲截断安全：`fill_tip` 的 `tip_full[768]` 缓冲复制后没有保证 NUL 结尾，超长截断时 tooltip 会读到缓冲区外脏内存；C++ 版用 `swprintf(…,768,…)` 天然安全。已改为复制后强制补 NUL。
+- PDH 缓冲对齐：`gpu_buf` 原为 `Vec<u8>`，被强转成要求 8 字节对齐的 `PDH_FMT_COUNTERVALUE_ITEM_W` 数组（内含指针/double），属对齐 UB（Windows 堆实践 16 对齐所以未崩）。已改用 `Vec<u64>` 保证对齐。
+- 编译日期：C++ 用 `__DATE__` 编译期生成，Rust 版曾硬编码日期、重建后会过期。新增 `build.rs`（纯 std）编译期生成 `BUILD_DATE` 环境变量供 About 显示。
+
+核对过并确认为刻意设计（非缺陷）：`ApplyZoom` 无条件保存窗口位置（C++ 相同，注释写明「锚点缩放会移动窗口，记下最终位置」）、拖动/定时器/看门狗顺序、`WM_DPICHANGED` 仅拉回可见区、退出路径不还原 GDI 选定对象（进程退出由系统回收）。
 
 ## 10. Rust FFI 踩过的坑（供维护者参考）
 
@@ -179,6 +189,7 @@ codegen-units = 1
 
 - `src/main.rs`：当前正式版 Rust 源码。
 - `Cargo.toml` / `Cargo.lock`：Rust 工程与依赖锁定。
+- `build.rs`：构建脚本，编译期生成 `BUILD_DATE` 环境变量（等价 C++ 的 `__DATE__`），供 About 窗口显示真实编译日期。
 - `build_rust.bat`：当前发布构建脚本。
 - `bin/ball.exe`：与 Rust 源码对应的已编译发布版。
 - `src/ball.cpp`、`build_ball.bat`：旧 C++ 实现与构建脚本，保留作历史对照，不参与当前发布构建。
