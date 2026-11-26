@@ -1,3 +1,6 @@
+# Rust build artifacts
+/target/
+
 # Visual Studio / MSYS2 build artifacts
 *.o
 *.obj
