@@ -384,12 +384,14 @@ struct Sampler {
     pdh_query: PDH_HQUERY, pdh_disk: PDH_HCOUNTER, pdh_gpu: PDH_HCOUNTER,
     disk_is_bytes: bool, gpu_buf: Vec<u64>,
     prev_in: u64, prev_out: u64, last_net_ms: u64, net_seeded: bool,
+    prev_ids: Vec<u32>,
 }
 impl Sampler {
     fn new() -> Self {
         Self { prev_idle: 0, prev_total: 0, cpu_seeded: false,
             pdh_query: null_mut(), pdh_disk: null_mut(), pdh_gpu: null_mut(), disk_is_bytes: false,
-            gpu_buf: Vec::new(), prev_in: 0, prev_out: 0, last_net_ms: 0, net_seeded: false }
+            gpu_buf: Vec::new(), prev_in: 0, prev_out: 0, last_net_ms: 0, net_seeded: false,
+            prev_ids: Vec::new() }
     }
     fn init_counters(&mut self) {
         unsafe {
@@ -480,39 +482,46 @@ impl Sampler {
     }
     fn net(&mut self) -> (f32, f32, f64, f64) {
         unsafe {
-            let mut sz = 0u32;
-            if GetIfTable(null_mut(), &mut sz, FALSE) != ERROR_INSUFFICIENT_BUFFER || sz == 0 { return (0.0, 0.0, 0.0, 0.0); }
-            let mut buf = vec![0u8; sz as usize];
-            let table = buf.as_mut_ptr() as *mut MIB_IFTABLE;
-            if GetIfTable(table, &mut sz, FALSE) != ERROR_SUCCESS { return (0.0, 0.0, 0.0, 0.0); }
+            // 改用 GetIfTable2：MIB_IF_ROW2 提供 64 位计数器（不会 32 位回绕）和
+            // FilterInterface 标志（NDIS 过滤驱动镜像行，计数与物理网卡重复），
+            // 从源头消除按计数对去重的不稳定性。旧 GetIfTable 在那套 API 上打补丁无效。
+            let mut table: *mut MIB_IF_TABLE2 = null_mut();
+            if GetIfTable2(&mut table) != 0 || table.is_null() { return (0.0, 0.0, 0.0, 0.0); }
             let mut inb = 0u64; let mut outb = 0u64;
-            let n = (*table).dwNumEntries as usize;
-            // 同一块网卡可能被过滤驱动镜像成多行（dwIndex 不同但计数完全相同），
-            // 按 (入,出) 计数去重，只统计一次，否则网速会被放大数倍
-            let mut seen: Vec<(u32, u32)> = Vec::new();
+            let n = (*table).NumEntries as usize;
+            let mut ids: Vec<u32> = Vec::new();
             for i in 0..n {
-                let r = &*(*table).table.as_ptr().add(i);
-                if r.dwOperStatus != IF_OPER_STATUS_OPERATIONAL { continue; } // 连接状态 = 5（曾误写 6 导致网速恒为 0）
-                if r.dwType == 24 { continue; }       // LOOPBACK
-                let pair = (r.dwInOctets, r.dwOutOctets);
-                if seen.contains(&pair) { continue; }
-                seen.push(pair);
-                inb = inb.wrapping_add(r.dwInOctets as u64);
-                outb = outb.wrapping_add(r.dwOutOctets as u64);
+                let r = &*(*table).Table.as_ptr().add(i);
+                // FilterInterface 位（bit1）：WFP/QoS/Virtual WiFi 等过滤镜像行，跳过。
+                // 注意 MIB_IF_ROW2 的 OperStatus 用新枚举 IfOperStatusUp=1，
+                // 与旧 MIB_IFROW.dwOperStatus 的 OPERATIONAL=5 不同。
+                if r.InterfaceAndOperStatusFlags._bitfield & 0x02 != 0 { continue; }
+                if r.OperStatus != 1 { continue; }  // IfOperStatusUp
+                if r.Type == MIB_IF_TYPE_LOOPBACK { continue; }
+                ids.push(r.InterfaceIndex);
+                inb = inb.wrapping_add(r.InOctets);
+                outb = outb.wrapping_add(r.OutOctets);
             }
+            FreeMibTable(table as *const c_void);
+            ids.sort_unstable();
             let now = GetTickCount64();
             if !self.net_seeded {
                 self.prev_in = inb; self.prev_out = outb; self.last_net_ms = now;
+                self.prev_ids = ids;
                 self.net_seeded = true;
                 return (0.0, 0.0, 0.0, 0.0);
             }
+            // 行身份集合变化（真网卡上下线）时重新播种，避免混入累计计数。
+            if ids != self.prev_ids {
+                self.prev_in = inb; self.prev_out = outb; self.last_net_ms = now;
+                self.prev_ids = ids;
+                return (0.0, 0.0, 0.0, 0.0);
+            }
+            self.prev_ids = ids;
             let dms = (now - self.last_net_ms).max(1);
             self.last_net_ms = now;
             let dt = dms as f64 / 1000.0;
-            // 无符号回绕求增量：行集合（已连接非回环行）不变时即使 32 位计数器回绕也正确；
-            // 但网卡上下线 / 镜像行增减会让本次求和"变小"，回绕出 ~2^64 的天文数字，
-            // 污染成"平均 17592186044421 MB/s"式的假网速。正常两次采样间的增量
-            // 远小于 2^40（1TB），超过即视为行集合变化，重新播种，本秒记 0。
+            // 64 位计数器正常情况下不会回绕；闸门仅防异常值污染历史。
             const MAX_PLAUSIBLE_DELTA: u64 = 1 << 40;
             let din = inb.wrapping_sub(self.prev_in);
             let dout = outb.wrapping_sub(self.prev_out);
