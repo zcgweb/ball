@@ -275,7 +275,7 @@ fn fmt_rate(bps: f64) -> String {
     else if bps < 1024.0 * 1024.0 { format!("{:.1} KB/s", bps / 1024.0) }
     else { format!("{:.2} MB/s", bps / (1024.0 * 1024.0)) }
 }
-fn build_date() -> String { "2026-11-26".to_string() }
+fn build_date() -> String { env!("BUILD_DATE").to_string() }
 fn fmt_about(lang: i32) -> String {
     let v = "1.0.0";
     let d = build_date();
@@ -382,7 +382,7 @@ fn sys_info_text(lang: i32) -> String {
 struct Sampler {
     prev_idle: u64, prev_total: u64, cpu_seeded: bool,
     pdh_query: PDH_HQUERY, pdh_disk: PDH_HCOUNTER, pdh_gpu: PDH_HCOUNTER,
-    disk_is_bytes: bool, gpu_buf: Vec<u8>,
+    disk_is_bytes: bool, gpu_buf: Vec<u64>,
     prev_in: u64, prev_out: u64, last_net_ms: u64, net_seeded: bool,
 }
 impl Sampler {
@@ -460,7 +460,11 @@ impl Sampler {
             if self.pdh_gpu.is_null() { return 0.0; }
             let mut size = 0u32; let mut count = 0u32;
             if PdhGetFormattedCounterArrayW(self.pdh_gpu, PDH_FMT_DOUBLE, &mut size, &mut count, null_mut()) != PDH_MORE_DATA || size == 0 { return 0.0; }
-            if self.gpu_buf.len() < size as usize { self.gpu_buf.resize(size as usize, 0); }
+            // 用 Vec<u64> 保证 8 字节对齐（PDH_FMT_COUNTERVALUE_ITEM_W 内含指针/double），
+            // Vec<u8> 只有 1 字节对齐保证，强转过去是对齐 UB
+            if self.gpu_buf.len() < (size as usize + 7) / 8 {
+                self.gpu_buf.resize((size as usize + 7) / 8, 0);
+            }
             let mut sz = size;
             if PdhGetFormattedCounterArrayW(self.pdh_gpu, PDH_FMT_DOUBLE, &mut sz, &mut count, self.gpu_buf.as_mut_ptr() as *mut PDH_FMT_COUNTERVALUE_ITEM_W) != ERROR_SUCCESS { return 0.0; }
             let items = self.gpu_buf.as_ptr() as *const PDH_FMT_COUNTERVALUE_ITEM_W;
@@ -1096,8 +1100,12 @@ fn fill_tip(gp: &mut G, id: usize, di: *mut NMTTDISPINFOW) {
     let sys = sys_info_text(gp.lang);
     let full = format!("{}\n{}", metric, sys);
     let fw = w(&full);
+    // 保证缓冲区永远以 NUL 结尾：即使超长被截断，tooltip 也不会读到脏内存
+    //（C++ 版用 swprintf(…,768,…) 天然保证这一点，移植时不能丢）
     let n = fw.len().min(gp.tip_full.len());
     gp.tip_full[..n].copy_from_slice(&fw[..n]);
+    let tip_last = gp.tip_full.len() - 1;
+    gp.tip_full[tip_last] = 0;
     unsafe { (*di).lpszText = gp.tip_full.as_mut_ptr(); }
 }
 
