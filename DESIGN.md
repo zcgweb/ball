@@ -145,7 +145,16 @@ codegen-units = 1
 
 依赖只有 `windows-sys 0.61`（启用所需 Win32 feature）；`Cargo.lock` 锁定具体版本。已在 `rustc 1.100.0 (x86_64-pc-windows-gnu)` 上验证，产物是 GUI 子系统 PE32+ exe，导入表 20 项，全部为 `KERNEL32.dll`、`user32.dll`、`gdi32.dll`、`advapi32.dll`、`shell32.dll`、`comctl32.dll`、`pdh.dll`、`iphlpapi.dll`、`ntdll.dll` 和 `api-ms-win-*` UCRT API Set，没有第三方 DLL。
 
-当前发布版：314,368 B，md5 `fdc09536e1bdf0dab5a4e6de46b0d12e`（已内嵌 `ball.ico`）。本机 WorkBuddy 工具进程里直接跑 cargo 可能触发子进程创建异常，构建应放在独立终端执行。
+当前发布版：314,368 B，md5 `af94885f88e227c8f756fa3b9eaa84f5`（已内嵌 `ball.ico`）。本机 WorkBuddy 工具进程里直接跑 cargo 可能触发子进程创建异常，构建应放在独立终端执行。
+
+### 单实例与句柄管理注意事项（2026-11-26 审计修复）
+
+移植 C++ 到 Rust 时出现过一批「条件写反」错误，集中在空句柄判断上（`is_null()` 少取反），已全部修复：
+
+- 单实例：`CreateMutexW` 在互斥体已存在时**仍返回有效句柄**，必须用 `GetLastError()==ERROR_ALREADY_EXISTS` 判断，不能看句柄是否为空；对旧窗口的通知（询问语言 + `ALREADY_MSG` 拉回）也因 `FindWindowW` 结果判断写反而从未执行。
+- 句柄泄漏：托盘图标每秒更新，旧 `HICON` 因条件写反从未销毁（实测 20 秒泄漏 20 个句柄，修复后零增长）；退出路径的 `DestroyIcon`、CBT hook 的 `UnhookWindowsHookEx` 同理。
+- 失效路径：`LoadLibraryW` 成功才应 `GetProcAddress`（版本号回退、DPI awareness 两处因条件写反变成对空模块取地址，永远失败）；`IDM_EXIT` 的 `PostMessageW(WM_CLOSE)` 因 `hwnd.is_null()` 写反从未发出；About 对话框 OK 按钮改文字、PDH 预热采集同理。
+- 防御性调整：磁盘计数器添加失败时仍执行 `PdhCollectQueryData`，保证同查询下的 GPU 计数器有数据。
 
 ## 10. Rust FFI 踩过的坑（供维护者参考）
 
