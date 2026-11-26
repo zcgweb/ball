@@ -509,8 +509,19 @@ impl Sampler {
             let dms = (now - self.last_net_ms).max(1);
             self.last_net_ms = now;
             let dt = dms as f64 / 1000.0;
-            let bin = (inb.wrapping_sub(self.prev_in) as f64 / dt).max(0.0);
-            let bout = (outb.wrapping_sub(self.prev_out) as f64 / dt).max(0.0);
+            // 无符号回绕求增量：行集合（已连接非回环行）不变时即使 32 位计数器回绕也正确；
+            // 但网卡上下线 / 镜像行增减会让本次求和"变小"，回绕出 ~2^64 的天文数字，
+            // 污染成"平均 17592186044421 MB/s"式的假网速。正常两次采样间的增量
+            // 远小于 2^40（1TB），超过即视为行集合变化，重新播种，本秒记 0。
+            const MAX_PLAUSIBLE_DELTA: u64 = 1 << 40;
+            let din = inb.wrapping_sub(self.prev_in);
+            let dout = outb.wrapping_sub(self.prev_out);
+            if din > MAX_PLAUSIBLE_DELTA || dout > MAX_PLAUSIBLE_DELTA {
+                self.prev_in = inb; self.prev_out = outb;
+                return (0.0, 0.0, 0.0, 0.0);
+            }
+            let bin = (din as f64 / dt).max(0.0);
+            let bout = (dout as f64 / dt).max(0.0);
             self.prev_in = inb; self.prev_out = outb;
             (net_busy(bin), net_busy(bout), bin, bout) // (down, up, inBps, outBps)
         }
