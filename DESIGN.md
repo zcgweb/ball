@@ -44,6 +44,7 @@ Sampler::gpu     G::center_exp  ...              双击/菜单
 - 球用 EMA 避免数字跳动刺眼。
 - 状态条故意不平滑，能真实反映短时峰值。
 - 网速没有固定的“满载”值，因此先用对数映射到 0–100 的“繁忙度”画条，同时把真实 B/s 存在历史里，只在 tooltip 里显示。
+- 网速采样细节（`GetIfTable`）：只统计 `dwOperStatus == IF_OPER_STATUS_OPERATIONAL(5)` 的已连接接口（曾误写为 6 导致网速恒为 0），排除回环（type 24）；同一块网卡可能被过滤驱动镜像成多行（`dwIndex` 不同但 `dwInOctets/dwOutOctets` 完全相同），按计数对去重只统计一次，否则网速会被放大数倍。
 - GPU 用 PDH 的 `GPU Engine(*)\Utilization Percentage` 计数器汇总得到使用率。
 - `fmt_rate()` 把 B/s 格式化为 B/s、KB/s 或 MB/s。
 
@@ -144,7 +145,7 @@ codegen-units = 1
 
 依赖只有 `windows-sys 0.61`（启用所需 Win32 feature）；`Cargo.lock` 锁定具体版本。已在 `rustc 1.100.0 (x86_64-pc-windows-gnu)` 上验证，产物是 GUI 子系统 PE32+ exe，导入表 20 项，全部为 `KERNEL32.dll`、`user32.dll`、`gdi32.dll`、`advapi32.dll`、`shell32.dll`、`comctl32.dll`、`pdh.dll`、`iphlpapi.dll`、`ntdll.dll` 和 `api-ms-win-*` UCRT API Set，没有第三方 DLL。
 
-当前发布版：314,368 B，md5 `74fbb1d3e649a989889704f177d7425f`（已内嵌 `ball.ico`）。本机 WorkBuddy 工具进程里直接跑 cargo 可能触发子进程创建异常，构建应放在独立终端执行。
+当前发布版：314,368 B，md5 `fdc09536e1bdf0dab5a4e6de46b0d12e`（已内嵌 `ball.ico`）。本机 WorkBuddy 工具进程里直接跑 cargo 可能触发子进程创建异常，构建应放在独立终端执行。
 
 ## 10. Rust FFI 踩过的坑（供维护者参考）
 
