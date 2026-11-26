@@ -145,7 +145,7 @@ codegen-units = 1
 
 依赖只有 `windows-sys 0.61`（启用所需 Win32 feature）；`Cargo.lock` 锁定具体版本。已在 `rustc 1.100.0 (x86_64-pc-windows-gnu)` 上验证，产物是 GUI 子系统 PE32+ exe，导入表 20 项，全部为 `KERNEL32.dll`、`user32.dll`、`gdi32.dll`、`advapi32.dll`、`shell32.dll`、`comctl32.dll`、`pdh.dll`、`iphlpapi.dll`、`ntdll.dll` 和 `api-ms-win-*` UCRT API Set，没有第三方 DLL。
 
-当前发布版：318,976 B，md5 `006f3296406e2d3ef3312f3764137531`（已内嵌 `ball.ico`）。本机 WorkBuddy 工具进程里直接跑 cargo 可能触发子进程创建异常，构建应放在独立终端执行。
+当前发布版：318,464 B，md5 `1888a594d361e5b2d53c6a49475cc394`（已内嵌 `ball.ico`）。本机 WorkBuddy 工具进程里直接跑 cargo 可能触发子进程创建异常，构建应放在独立终端执行。
 
 ### 单实例与句柄管理注意事项（2026-11-26 审计修复）
 
@@ -175,6 +175,20 @@ codegen-units = 1
 根因二：**行集合扩大**（网卡上线、镜像行出现、去重集合成员变化）时，增量一次性混入新加入行的**累计字节计数**——单个 32 位计数器最多 ~4.29 GB，除以 0.25 s 采样间隔即 ~17 GB/s 的假峰值，能通过按"每采样间隔增量 < 2^40"设的闸门。
 
 最终修复：采样器记录**参与求和的行身份集合**（排序后的 `dwIndex` 列表 `prev_ids`），与上次不同即重新播种（更新 prev 与 last_net_ms，本秒记 0），从源头同时消除"行移除回绕"与"行加入累计计数跳变"两类假值；行集合不变时 32 位计数器正常回绕仍由 `wrapping_sub` 正确处理，原 2^40 增量闸门保留作兜底。播种/播种失败路径统一更新 `last_net_ms`，避免下个采样 dt 跨两个间隔。
+
+### 第四轮重构：改用 GetIfTable2（2026-11-26，网速不准的最终解法）
+
+实测（diag_net.py）发现第三轮的"行集合抖动"根源是**按计数对去重本身不可靠**：本机 MediaTek Wi-Fi 物理网卡（idx 15）与其 5 个 NDIS 过滤镜像行（idx 31-35，WFP/QoS/Virtual WiFi Filter）报告**完全相同的 32 位计数**，绝大多数采样时刻相同→去重只留一行；偶尔镜像行先更新 1 个包→计数出现微小差异→两行都保留→求和翻倍（39 亿→78 亿字节）→15GB/s 假峰值和下一刻的回绕 GATE/0。稳定时真实速率其实只有 0.03~4 MB/s。前两轮的钳位/集合播种只是给错误设计打补丁。
+
+最终修复：彻底弃用 `GetIfTable`/`MIB_IFROW`（32 位计数 + 无过滤标志），改用 **`GetIfTable2`/`MIB_IF_TABLE2`**：
+- `MIB_IF_ROW2.InOctets/OutOctets` 是 **64 位**计数，不会 32 位回绕；
+- `InterfaceAndOperStatusFlags._bitfield & 0x02`（FilterInterface）直接剔除 NDIS 过滤驱动镜像行，不再按计数猜测去重；
+- `OperStatus` 用新枚举 `IfOperStatusUp=1`（旧 MIB_IFROW 是 `OPERATIONAL=5`，切勿混用）；
+- 用 `FreeMibTable` 释放 API 分配的表；
+- 保留行集合（`InterfaceIndex` 排序）变化重新播种与 2^40 增量闸门作兜底。
+- `Cargo.toml` 增加 `Win32_NetworkManagement_Ndis` feature。
+
+实测验证（diag_net2.py 连续 40 次 × 250ms）：行集合恒为同一组 9 行真实网卡，速率平稳 0.03~0.10 MB/s，无假峰值。
 
 ## 10. Rust FFI 踩过的坑（供维护者参考）
 
