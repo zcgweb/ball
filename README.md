@@ -33,7 +33,7 @@
 
 > 发布者若要彻底消除该提示，需用代码签名证书（OV/EV）对 `ball.exe` 签名并向 Microsoft SmartScreen 建立信誉；本项目默认不附带签名。
 
-> 当前发布版本：`1.0.0`（Rust 重写版，内嵌图标）。编译日期：`2026-11-26`。二进制 md5：`af94885f88e227c8f756fa3b9eaa84f5`（314,368 B）。
+> 当前发布版本：`1.0.0`（Rust 重写版，内嵌图标）。编译日期由 `build.rs` 在构建时自动生成（等价于 C++ 的 `__DATE__`）。二进制 md5：`b39c0a3f372a8f3dfc85603ae64861db`（314,880 B）。
 
 ## 目录结构
 
@@ -44,6 +44,7 @@
 ├── LICENSE               MIT 开源许可证
 ├── Cargo.toml            Rust 工程配置
 ├── Cargo.lock            依赖锁定（windows-sys 0.61）
+├── build.rs              构建脚本：编译期生成 BUILD_DATE（About 显示用）
 ├── build_rust.bat        Rust 发布构建脚本（当前版本）
 ├── bin/
 │   └── ball.exe          发布用单文件可执行程序（Rust 版）
