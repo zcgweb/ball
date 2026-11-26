@@ -319,7 +319,7 @@ fn os_version_text() -> String {
         // 回退 RtlGetVersion
         let ntdll = w("ntdll.dll");
         let h = LoadLibraryW(ntdll.as_ptr());
-        if h.is_null() {
+        if !h.is_null() {
             let p = GetProcAddress(h, b"RtlGetVersion\0".as_ptr());
             if let Some(f) = p {
                 type Fn = unsafe extern "system" fn(*mut OsVer) -> i32;
@@ -405,7 +405,7 @@ impl Sampler {
                 self.pdh_gpu = null_mut();
             }
             // 预热一次
-            if self.pdh_query.is_null() { PdhCollectQueryData(self.pdh_query); }
+            if !self.pdh_query.is_null() { PdhCollectQueryData(self.pdh_query); }
         }
     }
     fn cpu(&mut self) -> f32 {
@@ -440,8 +440,10 @@ impl Sampler {
     }
     fn disk(&mut self) -> f32 {
         unsafe {
-            if self.pdh_query.is_null() || self.pdh_disk.is_null() { return 0.0; }
+            // 只要查询存在就采集：即使磁盘计数器添加失败，也要保证 GPU 计数器有数据
+            if self.pdh_query.is_null() { return 0.0; }
             if PdhCollectQueryData(self.pdh_query) != ERROR_SUCCESS { return 0.0; }
+            if self.pdh_disk.is_null() { return 0.0; }
             let mut v: PDH_FMT_COUNTERVALUE = zeroed();
             if PdhGetFormattedCounterValue(self.pdh_disk, PDH_FMT_DOUBLE, null_mut(), &mut v) != ERROR_SUCCESS { return 0.0; }
             if v.CStatus != ERROR_SUCCESS { return 0.0; }
@@ -994,12 +996,12 @@ fn tray_icon(gp: &mut G) {
     gp.hicon = ni;
     gp.nid.hIcon = ni;
     gp_nid_modify(gp, NIF_ICON | NIF_TIP | NIF_MESSAGE | NIF_SHOWTIP);
-    if old.is_null() { unsafe { windows_sys::Win32::UI::WindowsAndMessaging::DestroyIcon(old); } }
+    if !old.is_null() { unsafe { windows_sys::Win32::UI::WindowsAndMessaging::DestroyIcon(old); } }
 }
 fn tray_remove(gp: &mut G) {
     unsafe {
         if gp.tray_added { Shell_NotifyIconW(NIM_DELETE, &gp.nid); gp.tray_added = false; }
-        if gp.hicon.is_null() { windows_sys::Win32::UI::WindowsAndMessaging::DestroyIcon(gp.hicon); gp.hicon = null_mut(); }
+        if !gp.hicon.is_null() { windows_sys::Win32::UI::WindowsAndMessaging::DestroyIcon(gp.hicon); gp.hicon = null_mut(); }
     }
 }
 fn tray_add(gp: &mut G) {
@@ -1227,11 +1229,11 @@ fn reset_all(gp: &mut G) {
 unsafe extern "system" fn about_cbt(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     if code == HCBT_ACTIVATE as i32 {
         let btn = GetDlgItem(wp as HWND, IDOK);
-        if btn.is_null() {
+        if !btn.is_null() {
             let txt = if g().lang == LANG_EN { w("OK") } else { w("确定") };
             SetWindowTextW(btn, txt.as_ptr());
         }
-        if g().about_hook.is_null() { UnhookWindowsHookEx(g().about_hook); g().about_hook = null_mut(); }
+        if !g().about_hook.is_null() { UnhookWindowsHookEx(g().about_hook); g().about_hook = null_mut(); }
     }
     CallNextHookEx(null_mut(), code, wp, lp)
 }
@@ -1241,7 +1243,7 @@ fn show_about(gp: &mut G) {
         let title = w(ui(gp.lang).about_title);
         gp.about_hook = SetWindowsHookExW(WH_CBT, Some(about_cbt), null_mut(), GetCurrentThreadId());
         MessageBoxW(gp.hwnd, body.as_ptr(), title.as_ptr(), MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND | MB_TOPMOST);
-        if gp.about_hook.is_null() { UnhookWindowsHookEx(gp.about_hook); gp.about_hook = null_mut(); }
+        if !gp.about_hook.is_null() { UnhookWindowsHookEx(gp.about_hook); gp.about_hook = null_mut(); }
     }
 }
 
@@ -1315,7 +1317,7 @@ fn show_menu(gp: &mut G, hwnd: HWND) {
 fn request_exit(gp: &mut G) {
     gp.running = false;
     unsafe {
-        if gp.hwnd.is_null() { PostMessageW(gp.hwnd, WM_CLOSE, 0, 0); }
+        if !gp.hwnd.is_null() { PostMessageW(gp.hwnd, WM_CLOSE, 0, 0); }
         PostQuitMessage(0);
     }
 }
@@ -1442,7 +1444,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
         WM_DESTROY => {
             KillTimer(hwnd, 1);
             tray_remove(g());
-            if g().mutex.is_null() { ReleaseMutex(g().mutex); CloseHandle(g().mutex); g().mutex = null_mut(); }
+            if !g().mutex.is_null() { ReleaseMutex(g().mutex); CloseHandle(g().mutex); g().mutex = null_mut(); }
             PostQuitMessage(0);
             return 0;
         }
@@ -1466,7 +1468,7 @@ fn set_dpi_aware() {
     unsafe {
         let sc = w("shcore.dll");
         let h = LoadLibraryW(sc.as_ptr());
-        if h.is_null() {
+        if !h.is_null() {
             let p = GetProcAddress(h, b"SetProcessDpiAwareness\0".as_ptr());
             if let Some(f) = p {
                 type Fn = unsafe extern "system" fn(i32) -> i32;
@@ -1496,10 +1498,12 @@ fn real_main() -> i32 {
 
         g().mutex = CreateMutexW(null(), TRUE, w(MUTEX_NAME).as_ptr());
         let err = windows_sys::Win32::Foundation::GetLastError();
-        if g().mutex.is_null() && err == ERROR_ALREADY_EXISTS {
+        // 注意：互斥体已存在时 CreateMutexW 仍返回有效句柄，
+        // 必须用 GetLastError()==ERROR_ALREADY_EXISTS 判断，不能看句柄是否为空
+        if err == ERROR_ALREADY_EXISTS {
             let cls = w(CLASS_NAME); let title = w(BALL_TITLE);
             let exist = FindWindowW(cls.as_ptr(), title.as_ptr());
-            if exist.is_null() {
+            if !exist.is_null() {
                 let mut lang: usize = LANG_ZH as usize;
                 SendMessageTimeoutW(exist, QUERY_LANG_MSG, 0, 0, SMTO_ABORTIFHUNG as u32, 300, &mut lang);
                 if lang == LANG_EN as usize { g().lang = LANG_EN; }
@@ -1564,7 +1568,7 @@ fn real_main() -> i32 {
             cls.as_ptr(), title.as_ptr(), WS_POPUP,
             g().win_x, g().win_y, g().out_w(), g().out_view_h(),
             null_mut(), null_mut(), hinstance, null());
-        if g().hwnd.is_null() { if g().mutex.is_null() { CloseHandle(g().mutex); g().mutex = null_mut(); } return 1; }
+        if g().hwnd.is_null() { if !g().mutex.is_null() { CloseHandle(g().mutex); g().mutex = null_mut(); } return 1; }
 
         g().hicon = LoadIconW(hinstance, IDI_APP as *const u16);
         if g().hicon.is_null() { g().hicon = create_tray_icon(0.0); }
@@ -1585,7 +1589,7 @@ fn real_main() -> i32 {
         tray_remove(g());
         if !g().font.is_null() { DeleteObject(g().font); }
         if !g().font_small.is_null() { DeleteObject(g().font_small); }
-        if g().mutex.is_null() { ReleaseMutex(g().mutex); CloseHandle(g().mutex); g().mutex = null_mut(); }
+        if !g().mutex.is_null() { ReleaseMutex(g().mutex); CloseHandle(g().mutex); g().mutex = null_mut(); }
         0
     }
 }
