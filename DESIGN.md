@@ -125,8 +125,12 @@ Sampler::gpu     G::center_exp  ...              双击/菜单
 
 `build_rust.bat`：
 
-1. `cargo build --release`。
-2. 把 `target\release\ball.exe` 复制到 `bin\ball.exe`。
+1. 用 MSYS2 UCRT64 的 `windres` 在 `src\` 目录编译 `ball.rc`，输出 `target\ball_res.o`。资源脚本把 `ball.ico` 声明为 `IDI_APP ICON "ball.ico"`（`IDI_APP = 101`）。
+2. 设置 `RUSTFLAGS=-C link-arg=<repo>/target/ball_res.o`，把这个 COFF 资源对象交给 rustc 链接器。
+3. `cargo build --release`。
+4. 把 `target\release\ball.exe` 复制到 `bin\ball.exe`。
+
+`src/main.rs` 在注册窗口类和初始化托盘时都用 `LoadIconW(hinstance, IDI_APP)` 加载该资源；资源缺失时才回退到系统默认图标或动态绘制图标。
 
 `Cargo.toml` 的 release profile：
 
@@ -140,7 +144,7 @@ codegen-units = 1
 
 依赖只有 `windows-sys 0.61`（启用所需 Win32 feature）；`Cargo.lock` 锁定具体版本。已在 `rustc 1.100.0 (x86_64-pc-windows-gnu)` 上验证，产物是 GUI 子系统 PE32+ exe，导入表 20 项，全部为 `KERNEL32.dll`、`user32.dll`、`gdi32.dll`、`advapi32.dll`、`shell32.dll`、`comctl32.dll`、`pdh.dll`、`iphlpapi.dll`、`ntdll.dll` 和 `api-ms-win-*` UCRT API Set，没有第三方 DLL。
 
-当前发布版：306,176 B，md5 `934c3cb31cf390c7175b736d2aaefcf4`。本机 WorkBuddy 工具进程里直接跑 cargo 可能触发子进程创建异常，构建应放在独立终端执行。
+当前发布版：314,368 B，md5 `74fbb1d3e649a989889704f177d7425f`（已内嵌 `ball.ico`）。本机 WorkBuddy 工具进程里直接跑 cargo 可能触发子进程创建异常，构建应放在独立终端执行。
 
 ## 10. Rust FFI 踩过的坑（供维护者参考）
 
@@ -159,6 +163,7 @@ codegen-units = 1
 - 偏好写入：`Lang=1`、`Zoom=3`、`ShowText=1`、`WinX=1770`、`WinY=24`；重启后窗口尺寸 `126×140`（Zoom=3 档），语言查询返回 `1`。
 - 菜单命令冒烟测试：命令 `2001..2015`（排除会弹模态框的 About 和 Exit）逐个发送后窗口仍存活，输出 `ALL_MENU_OK`，stderr 为空。
 - 导入表与子系统：PE32+，Subsystem=2（GUI），20 个导入项均为系统 DLL / UCRT API Set。
+- 图标资源：PE 资源目录含 `RT_ICON` ids `[1..7]` 与 `RT_GROUP_ICON` id `101`；`ExtractIconExW` 可提取图标；运行时窗口类 `HICON/HICONSM` 均非空。
 
 ## 12. 文件对应关系
 
@@ -166,5 +171,6 @@ codegen-units = 1
 - `Cargo.toml` / `Cargo.lock`：Rust 工程与依赖锁定。
 - `build_rust.bat`：当前发布构建脚本。
 - `bin/ball.exe`：与 Rust 源码对应的已编译发布版。
-- `src/ball.cpp`、`src/ball.rc`、`src/ball.ico`、`build_ball.bat`：旧 C++ 实现与构建脚本，保留作历史对照，不参与当前发布构建。
+- `src/ball.cpp`、`build_ball.bat`：旧 C++ 实现与构建脚本，保留作历史对照，不参与当前发布构建。
+- `src/ball.rc`、`src/ball.ico`：当前 Rust 版复用的图标资源脚本与图标文件，由 `build_rust.bat` 编译并链入 exe。
 - `legacy/ball.py`：早期 Python 原型，保留作思路演进参考，不参与构建。
