@@ -33,7 +33,7 @@
 
 > 发布者若要彻底消除该提示，需用代码签名证书（OV/EV）对 `ball.exe` 签名并向 Microsoft SmartScreen 建立信誉；本项目默认不附带签名。
 
-> 当前发布版本：`1.0.0`（Rust 重写版）。编译日期：`2026-11-26`。二进制 md5：`934c3cb31cf390c7175b736d2aaefcf4`（306,176 B）。
+> 当前发布版本：`1.0.0`（Rust 重写版，内嵌图标）。编译日期：`2026-11-26`。二进制 md5：`74fbb1d3e649a989889704f177d7425f`（314,368 B）。
 
 ## 目录结构
 
@@ -50,14 +50,14 @@
 ├── src/
 │   ├── main.rs           当前正式源码：Rust / Win32 GDI
 │   ├── ball.cpp          旧 C++ 实现，保留作对照
-│   ├── ball.rc           旧 C++ 图标资源脚本
-│   └── ball.ico          旧 C++ 图标文件
+│   ├── ball.rc           图标资源脚本（Rust 版复用，IDI_APP=101）
+│   └── ball.ico          程序图标，Rust exe 内嵌资源
 ├── legacy/
 │   └── ball.py           早期 Python 原型，仅作历史参考
 └── build_ball.bat        旧 C++ 版构建脚本，保留作历史参考
 ```
 
-当前 `bin/ball.exe` 由 `src/main.rs` + `Cargo.toml` 构建，不是由旧 C++ 源码生成。旧 `build_ball.bat` 和 `src/ball.cpp` 仅用于对照早期实现，不再用于发布构建。
+当前 `bin/ball.exe` 由 `src/main.rs` + `Cargo.toml` + `src/ball.rc` / `src/ball.ico` 构建，不是由旧 C++ 源码生成。旧 `build_ball.bat` 和 `src/ball.cpp` 仅用于对照早期实现，不再用于发布构建。
 
 ## 从源码构建（Rust）
 
@@ -67,16 +67,18 @@
 build_rust.bat
 ```
 
-脚本等价于：
+脚本会先用 MSYS2 UCRT64 的 `windres` 把 `src/ball.rc` 编译成 COFF 资源对象，再通过 `RUSTFLAGS=-C link-arg=...` 链接进 release exe，最后复制到 `bin/ball.exe`：
 
 ```bat
+windres -i ball.rc -o ..\target\ball_res.o   rem 工作目录为 src\
+set RUSTFLAGS=%RUSTFLAGS% -C link-arg=<repo>/target/ball_res.o
 cargo build --release
 copy /Y target\release\ball.exe bin\ball.exe
 ```
 
 `Cargo.toml` 的 release profile 使用 `opt-level = "z"`、`lto = true`、`panic = "abort"`、`strip = true`、`codegen-units = 1`，产物为单个 GUI 子系统 exe。本机的 WorkBuddy 工具进程里直接跑 cargo 可能触发子进程创建异常，构建请在独立终端中执行。
 
-> 已知差异：当前 Rust 版尚未把 `src/ball.ico` 编进资源，exe 使用系统默认应用图标；图标资源保留在 `src/` 供后续接入。
+> 图标：`src/main.rs` 用 `IDI_APP = 101` 从自身资源加载图标，作为窗口类图标和托盘初始图标；托盘运行时仍会按负载动态绘制状态图标。
 
 ## 偏好存储位置
 
